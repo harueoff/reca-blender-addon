@@ -1,0 +1,32 @@
+schema_version = "1.0.0"
+
+id = "reca"
+version = "2.0.0"
+name = "RECA - All-in-One 3D Toolkit"
+tagline = "Professional multi-purpose 3D toolkit with MCP Server and AI Integration"
+maintainer = "RECA Team <reca.addon@gmail.com>"
+type = "add-on"
+
+website = "https://github.com/harueoff/reca-blender-addon"
+tags = ["3D View", "Scene", "Import-Export", "Render", "Material"]
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+copyright = [
+  "2026 RECA Team",
+]
+
+[permissions]
+network = "MCP server and AI API connections"
+files = "Import/export 3D files and save presets"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/*.zip",
+]
