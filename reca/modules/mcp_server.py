@@ -1001,7 +1001,19 @@ _http_server = None
 _http_thread = None
 
 
-def start_servers(socket_port=9876, http_port=9877):
+def _get_local_ip():
+    """Get the machine's local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+
+def start_servers(socket_port=9876, http_port=9877, remote=False):
     """Start both TCP socket and HTTP servers."""
     global _socket_server, _http_server, _http_thread
 
@@ -1009,13 +1021,14 @@ def start_servers(socket_port=9876, http_port=9877):
     if not bpy.app.timers.is_registered(_process_queue):
         bpy.app.timers.register(_process_queue, persistent=True)
 
+    bind_host = '0.0.0.0' if remote else 'localhost'
     results = {}
 
     # Start TCP socket (blender-mcp compatible)
     if _socket_server is None:
-        _socket_server = BlenderMCPSocketServer('localhost', socket_port)
+        _socket_server = BlenderMCPSocketServer(bind_host, socket_port)
         if _socket_server.start():
-            results['socket'] = f"localhost:{socket_port}"
+            results['socket'] = f"{bind_host}:{socket_port}"
         else:
             _socket_server = None
             results['socket_error'] = "Failed to start"
@@ -1023,13 +1036,16 @@ def start_servers(socket_port=9876, http_port=9877):
     # Start HTTP (direct MCP)
     if _http_server is None:
         try:
-            _http_server = HTTPServer(('127.0.0.1', http_port), MCPRequestHandler)
+            _http_server = HTTPServer((bind_host, http_port), MCPRequestHandler)
             _http_thread = threading.Thread(target=_http_server.serve_forever, daemon=True)
             _http_thread.start()
-            results['http'] = f"http://127.0.0.1:{http_port}"
+            results['http'] = f"http://{bind_host}:{http_port}"
         except Exception as e:
             _http_server = None
             results['http_error'] = str(e)
+
+    if remote:
+        results['local_ip'] = _get_local_ip()
 
     return results
 
@@ -1067,17 +1083,21 @@ def is_http_running():
 #  MCP Config Generator
 # ─────────────────────────────────────────────
 
-def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop"):
+def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop", host="127.0.0.1"):
     """Generate MCP client config JSON for various AI agents."""
     configs = {
         "claude-desktop": {
-            "description": "Claude Desktop (via uvx blender-mcp)",
+            "description": "Claude Desktop (via uvx reca-blender-mcp)",
             "path": "claude_desktop_config.json",
             "config": {
                 "mcpServers": {
                     "blender": {
                         "command": "uvx",
-                        "args": ["blender-mcp"],
+                        "args": ["reca-blender-mcp"],
+                        "env": {
+                            "BLENDER_HOST": host,
+                            "BLENDER_PORT": str(socket_port),
+                        },
                     }
                 }
             },
@@ -1088,7 +1108,7 @@ def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop"
             "config": {
                 "mcpServers": {
                     "reca-blender": {
-                        "url": f"http://127.0.0.1:{http_port}",
+                        "url": f"http://{host}:{http_port}",
                     }
                 }
             },
@@ -1100,7 +1120,11 @@ def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop"
                 "mcpServers": {
                     "blender": {
                         "command": "uvx",
-                        "args": ["blender-mcp"],
+                        "args": ["reca-blender-mcp"],
+                        "env": {
+                            "BLENDER_HOST": host,
+                            "BLENDER_PORT": str(socket_port),
+                        },
                     }
                 }
             },
@@ -1111,7 +1135,7 @@ def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop"
             "config": {
                 "mcpServers": {
                     "reca-blender": {
-                        "url": f"http://127.0.0.1:{http_port}",
+                        "url": f"http://{host}:{http_port}",
                     }
                 }
             },
@@ -1122,7 +1146,7 @@ def generate_mcp_config(socket_port=9876, http_port=9877, agent="claude-desktop"
             "config": {
                 "mcpServers": {
                     "reca-blender": {
-                        "url": f"http://127.0.0.1:{http_port}",
+                        "url": f"http://{host}:{http_port}",
                     }
                 }
             },
@@ -1140,6 +1164,12 @@ class RECA_PG_mcp_server(PropertyGroup):
     socket_port: IntProperty(name="Socket Port (blender-mcp)", default=9876, min=1024, max=65535)
     http_port: IntProperty(name="HTTP Port (direct MCP)", default=9877, min=1024, max=65535)
     auto_start: BoolProperty(name="Auto-Start on Blender Launch", default=False)
+    remote_access: BoolProperty(
+        name="Remote Access (0.0.0.0)",
+        description="Allow connections from other computers on the network. "
+                    "When disabled, only localhost (127.0.0.1) can connect",
+        default=False,
+    )
     agent_type: EnumProperty(
         name="Agent",
         items=[
@@ -1152,6 +1182,7 @@ class RECA_PG_mcp_server(PropertyGroup):
         default='CLAUDE_DESKTOP',
     )
     status: StringProperty(name="Status", default="Stopped")
+    local_ip: StringProperty(name="Local IP", default="")
     allow_python_exec: BoolProperty(
         name="Allow Python Execution",
         description="Allow AI agents to execute arbitrary Python code (security risk!)",
@@ -1183,7 +1214,7 @@ class RECA_OT_mcp_start(Operator):
                 "handler": _tool_execute_python,
             }
 
-        results = start_servers(mcp.socket_port, mcp.http_port)
+        results = start_servers(mcp.socket_port, mcp.http_port, remote=mcp.remote_access)
         mcp.enabled = True
 
         parts = []
@@ -1191,9 +1222,14 @@ class RECA_OT_mcp_start(Operator):
             parts.append(f"Socket: {results['socket']}")
         if 'http' in results:
             parts.append(f"HTTP: {results['http']}")
+        if 'local_ip' in results:
+            mcp.local_ip = results['local_ip']
         mcp.status = " | ".join(parts) if parts else "Error"
 
-        msg = f"MCP started — Socket :{mcp.socket_port} (blender-mcp) + HTTP :{mcp.http_port}"
+        bind = "0.0.0.0 (remote)" if mcp.remote_access else "localhost"
+        msg = f"MCP started — {bind} — Socket :{mcp.socket_port} + HTTP :{mcp.http_port}"
+        if mcp.remote_access and mcp.local_ip:
+            msg += f" — LAN IP: {mcp.local_ip}"
         self.report({'INFO'}, msg)
         print(f"[RECA MCP] {msg}")
         return {'FINISHED'}
@@ -1228,7 +1264,8 @@ class RECA_OT_mcp_generate_config(Operator):
             'DIRECT_HTTP': 'direct-http',
         }
         agent = agent_map[mcp.agent_type]
-        config = generate_mcp_config(mcp.socket_port, mcp.http_port, agent)
+        host = mcp.local_ip if mcp.remote_access and mcp.local_ip else "127.0.0.1"
+        config = generate_mcp_config(mcp.socket_port, mcp.http_port, agent, host=host)
 
         config_json = json.dumps(config["config"], indent=2)
         context.window_manager.clipboard = config_json
@@ -1298,10 +1335,13 @@ def draw_panel(layout, context):
     # Connection status details
     if is_server_running():
         col = box.column(align=True)
+        host = mcp.local_ip if mcp.remote_access and mcp.local_ip else "localhost"
         if is_socket_running():
-            col.label(text=f"Socket: localhost:{mcp.socket_port} (blender-mcp)", icon='LINKED')
+            col.label(text=f"Socket: {host}:{mcp.socket_port} (blender-mcp)", icon='LINKED')
         if is_http_running():
-            col.label(text=f"HTTP: http://127.0.0.1:{mcp.http_port}", icon='WORLD')
+            col.label(text=f"HTTP: http://{host}:{mcp.http_port}", icon='WORLD')
+        if mcp.remote_access and mcp.local_ip:
+            col.label(text=f"LAN IP: {mcp.local_ip}", icon='WORLD_DATA')
 
     # Server settings
     layout.separator()
@@ -1309,6 +1349,7 @@ def draw_panel(layout, context):
     box.label(text="Settings", icon='PREFERENCES')
     box.prop(mcp, "socket_port")
     box.prop(mcp, "http_port")
+    box.prop(mcp, "remote_access")
     box.prop(mcp, "auto_start")
     box.prop(mcp, "allow_python_exec")
 
@@ -1336,7 +1377,8 @@ def draw_panel(layout, context):
         col.label(text="3. Start server above, then open Claude Desktop")
     elif agent == 'CLAUDE_CODE':
         col.label(text="1. Start server above", icon='INFO')
-        col.label(text="2. Run: claude mcp add reca http://127.0.0.1:" + str(mcp.http_port))
+        http_host = mcp.local_ip if mcp.remote_access and mcp.local_ip else "127.0.0.1"
+        col.label(text=f"2. Run: claude mcp add reca http://{http_host}:{mcp.http_port}")
     elif agent == 'CURSOR':
         col.label(text="1. Install: pip install blender-mcp", icon='INFO')
         col.label(text="2. Cursor > Settings > MCP > Add Server")
@@ -1346,7 +1388,8 @@ def draw_panel(layout, context):
         col.label(text="2. Add HTTP endpoint in OpenClaw settings")
     else:
         col.label(text="1. Start server above", icon='INFO')
-        col.label(text=f"2. Connect to http://127.0.0.1:{mcp.http_port}")
+        http_host = mcp.local_ip if mcp.remote_access and mcp.local_ip else "127.0.0.1"
+        col.label(text=f"2. Connect to http://{http_host}:{mcp.http_port}")
 
     box.operator("reca.mcp_generate_config", icon='COPYDOWN')
 
@@ -1369,9 +1412,13 @@ def _auto_start_handler(dummy):
     """Start MCP servers automatically if configured."""
     for scene in bpy.data.scenes:
         if hasattr(scene, 'reca_mcp') and scene.reca_mcp.auto_start:
-            start_servers(scene.reca_mcp.socket_port, scene.reca_mcp.http_port)
-            scene.reca_mcp.enabled = True
-            scene.reca_mcp.status = f"Socket :{scene.reca_mcp.socket_port} | HTTP :{scene.reca_mcp.http_port}"
+            mcp = scene.reca_mcp
+            results = start_servers(mcp.socket_port, mcp.http_port, remote=mcp.remote_access)
+            mcp.enabled = True
+            if 'local_ip' in results:
+                mcp.local_ip = results['local_ip']
+            bind = "0.0.0.0" if mcp.remote_access else "localhost"
+            mcp.status = f"Socket {bind}:{mcp.socket_port} | HTTP {bind}:{mcp.http_port}"
             break
 
 
